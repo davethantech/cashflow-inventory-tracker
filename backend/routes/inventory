@@ -1,0 +1,409 @@
+const express = require('express');
+const { body, validationResult } = require('express-validator');
+const router = express.Router();
+const auth = require('../middleware/auth');
+
+const db = require('../database/db');
+
+/**
+ * @swagger
+ * /api/inventory/products:
+ *   post:
+ *     summary: Create a new product
+ *     tags: [Inventory]
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - name
+ *               - cost_price
+ *               - selling_price
+ *             properties:
+ *               name:
+ *                 type: string
+ *               sku:
+ *                 type: string
+ *               description:
+ *                 type: string
+ *               cost_price:
+ *                 type: number
+ *               selling_price:
+ *                 type: number
+ *               current_stock:
+ *                 type: integer
+ *               minimum_stock:
+ *                 type: integer
+ *               category:
+ *                 type: string
+ *               unit:
+ *                 type: string
+ *               track_stock:
+ *                 type: boolean
+ *     responses:
+ *       201:
+ *         description: Product created successfully
+ */
+router.post('/products',
+  auth,
+  [
+    body('name').notEmpty().withMessage('Product name is required'),
+    body('cost_price').isNumeric().withMessage('Valid cost price required'),
+    body('selling_price').isNumeric().withMessage('Valid selling price required')
+  ],
+  async (req, res) => {
+    try {
+      const errors = validationResult(req);
+      if (!errors.isEmpty()) {
+        return res.status(400).json({ errors: errors.array() });
+      }
+
+      const {
+        name,
+        sku,
+        description,
+        cost_price,
+        selling_price,
+        current_stock = 0,
+        minimum_stock = 5,
+        category,
+        unit = 'pcs',
+        track_stock = true
+      } = req.body;
+
+      // Generate SKU if not provided
+      const finalSku = sku || `PROD-${Date.now()}-${Math.random().toString(36).substr(2, 6)}`;
+
+      const [product] = await db('products')
+        .insert({
+          user_id: req.user.userId,
+          name,
+          sku: finalSku,
+          description,
+          cost_price,
+          selling_price,
+          current_stock,
+          minimum_stock,
+          category,
+          unit,
+          track_stock
+        })
+        .returning('*');
+
+      res.status(201).json({
+        message: 'Product created successfully',
+        product
+      });
+    } catch (error) {
+      console.error('Product creation error:', error);
+      if (error.code === '23505') { // Unique constraint violation
+        return res.status(400).json({ error: 'SKU already exists' });
+      }
+      res.status(500).json({ error: 'Failed to create product' });
+    }
+  }
+);
+
+/**
+ * @swagger
+ * /api/inventory/products:
+ *   get:
+ *     summary: Get all products with pagination
+ *     tags: [Inventory]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: query
+ *         name: page
+ *         schema:
+ *           type: integer
+ *         description: Page number
+ *       - in: query
+ *         name: limit
+ *         schema:
+ *           type: integer
+ *         description: Number of items per page
+ *       - in: query
+ *         name: search
+ *         schema:
+ *           type: string
+ *         description: Search term for product name
+ *       - in: query
+ *         name: lowStock
+ *         schema:
+ *           type: boolean
+ *         description: Filter low stock items only
+ *     responses:
+ *       200:
+ *         description: Products list retrieved successfully
+ */
+router.get('/products', auth, async (req, res) => {
+  try {
+    const {
+      page = 1,
+      limit = 50,
+      search,
+      lowStock
+    } = req.query;
+
+    const offset = (page - 1) * limit;
+
+    let query = db('products')
+      .where('user_id', req.user.userId)
+      .where('is_active', true);
+
+    if (search) {
+      query = query.where(function() {
+        this.where('name', 'ilike', `%${search}%`)
+          .orWhere('sku', 'ilike', `%${search}%`)
+          .orWhere('category', 'ilike', `%${search}%`);
+      });
+    }
+
+    if (lowStock === 'true') {
+      query = query.whereRaw('current_stock <= minimum_stock');
+    }
+
+    const products = await query
+      .select('*')
+      .orderBy('name', 'asc')
+      .limit(limit)
+      .offset(offset);
+
+    // Get total count
+    const totalQuery = db('products').where('user_id', req.user.userId).where('is_active', true);
+    if (search) {
+      totalQuery.where(function() {
+        this.where('name', 'ilike', `%${search}%`)
+          .orWhere('sku', 'ilike', `%${search}%`)
+          .orWhere('category', 'ilike', `%${search}%`);
+      });
+    }
+    if (lowStock === 'true') {
+      totalQuery.whereRaw('current_stock <= minimum_stock');
+    }
+
+    const total = await totalQuery.count('* as count').first();
+
+    res.json({
+      products,
+      pagination: {
+        page: parseInt(page),
+        limit: parseInt(limit),
+        total: parseInt(total.count),
+        pages: Math.ceil(total.count / limit)
+      }
+    });
+  } catch (error) {
+    console.error('Products fetch error:', error);
+    res.status(500).json({ error: 'Failed to fetch products' });
+  }
+});
+
+/**
+ * @swagger
+ * /api/inventory/products/{id}:
+ *   put:
+ *     summary: Update a product
+ *     tags: [Inventory]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: integer
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               name:
+ *                 type: string
+ *               description:
+ *                 type: string
+ *               cost_price:
+ *                 type: number
+ *               selling_price:
+ *                 type: number
+ *               current_stock:
+ *                 type: integer
+ *               minimum_stock:
+ *                 type: integer
+ *               category:
+ *                 type: string
+ *               unit:
+ *                 type: string
+ *     responses:
+ *       200:
+ *         description: Product updated successfully
+ */
+router.put('/products/:id', auth, async (req, res) => {
+  try {
+    const productId = req.params.id;
+    const updateData = { ...req.body, updated_at: new Date() };
+
+    const [product] = await db('products')
+      .where('id', productId)
+      .andWhere('user_id', req.user.userId)
+      .update(updateData)
+      .returning('*');
+
+    if (!product) {
+      return res.status(404).json({ error: 'Product not found' });
+    }
+
+    res.json({
+      message: 'Product updated successfully',
+      product
+    });
+  } catch (error) {
+    console.error('Product update error:', error);
+    res.status(500).json({ error: 'Failed to update product' });
+  }
+});
+
+/**
+ * @swagger
+ * /api/inventory/low-stock-alerts:
+ *   get:
+ *     summary: Get low stock alerts
+ *     tags: [Inventory]
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: Low stock alerts retrieved successfully
+ */
+router.get('/low-stock-alerts', auth, async (req, res) => {
+  try {
+    const lowStockProducts = await db('products')
+      .where('user_id', req.user.userId)
+      .where('is_active', true)
+      .where('track_stock', true)
+      .whereRaw('current_stock <= minimum_stock')
+      .select('*')
+      .orderBy('current_stock', 'asc');
+
+    res.json({
+      alerts: lowStockProducts,
+      count: lowStockProducts.length
+    });
+  } catch (error) {
+    console.error('Low stock alerts error:', error);
+    res.status(500).json({ error: 'Failed to fetch low stock alerts' });
+  }
+});
+
+/**
+ * @swagger
+ * /api/inventory/stock-adjustment:
+ *   post:
+ *     summary: Adjust product stock
+ *     tags: [Inventory]
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - product_id
+ *               - new_stock
+ *               - reason
+ *             properties:
+ *               product_id:
+ *                 type: integer
+ *               new_stock:
+ *                 type: integer
+ *               reason:
+ *                 type: string
+ *               notes:
+ *                 type: string
+ *     responses:
+ *       200:
+ *         description: Stock adjusted successfully
+ */
+router.post('/stock-adjustment',
+  auth,
+  [
+    body('product_id').isInt().withMessage('Valid product ID required'),
+    body('new_stock').isInt().withMessage('Valid stock quantity required'),
+    body('reason').notEmpty().withMessage('Reason for adjustment is required')
+  ],
+  async (req, res) => {
+    try {
+      const errors = validationResult(req);
+      if (!errors.isEmpty()) {
+        return res.status(400).json({ errors: errors.array() });
+      }
+
+      const { product_id, new_stock, reason, notes } = req.body;
+
+      const trx = await db.transaction();
+
+      try {
+        // Get current stock
+        const product = await trx('products')
+          .where('id', product_id)
+          .andWhere('user_id', req.user.userId)
+          .first();
+
+        if (!product) {
+          await trx.rollback();
+          return res.status(404).json({ error: 'Product not found' });
+        }
+
+        const previous_stock = product.current_stock;
+        const adjustment = new_stock - previous_stock;
+
+        // Update product stock
+        await trx('products')
+          .where('id', product_id)
+          .update({ current_stock: new_stock });
+
+        // Record adjustment
+        await trx('stock_adjustments').insert({
+          user_id: req.user.userId,
+          product_id,
+          previous_stock,
+          new_stock,
+          adjustment,
+          reason,
+          notes
+        });
+
+        await trx.commit();
+
+        res.json({
+          message: 'Stock adjusted successfully',
+          adjustment: {
+            product_id,
+            product_name: product.name,
+            previous_stock,
+            new_stock,
+            adjustment,
+            reason
+          }
+        });
+      } catch (error) {
+        await trx.rollback();
+        throw error;
+      }
+    } catch (error) {
+      console.error('Stock adjustment error:', error);
+      res.status(500).json({ error: 'Failed to adjust stock' });
+    }
+  }
+);
+
+module.exports = router;
