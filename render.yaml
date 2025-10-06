@@ -1,0 +1,23 @@
+services:
+  - type: web
+    name: cashflow-backend
+    env: node
+    plan: free
+    rootDir: backend
+    buildCommand: npm install
+    startCommand: npm start
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: JWT_SECRET
+        generateValue: true
+      - key: DATABASE_URL
+        fromDatabase:
+          name: cashflow-db
+          property: connectionString
+
+databases:
+  - name: cashflow-db
+    plan: free
+    databaseName: cashflow_tracker
+    user: cashflow_user
