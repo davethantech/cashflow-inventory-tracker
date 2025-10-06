@@ -1,5 +1,5 @@
 import React, { createContext, useState, useEffect } from 'react';
-import { Alert } from 'react-native';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import api from '../services/api';
 
 export const AuthContext = createContext();
@@ -16,15 +16,18 @@ export const AuthProvider = ({ children }) => {
 
   const checkAuthState = async () => {
     try {
-      // In React Native, you would use AsyncStorage here
-      const storedToken = localStorage.getItem('authToken');
-      const storedUser = localStorage.getItem('userData');
+      const storedToken = await AsyncStorage.getItem('userToken');
+      const storedUser = await AsyncStorage.getItem('userData');
+      const storedLanguage = await AsyncStorage.getItem('userLanguage');
 
       if (storedToken && storedUser) {
         setToken(storedToken);
         setUser(JSON.parse(storedUser));
-        // Set default authorization header
         api.defaults.headers.common['Authorization'] = `Bearer ${storedToken}`;
+      }
+
+      if (storedLanguage) {
+        setLanguage(storedLanguage);
       }
     } catch (error) {
       console.error('Auth state check error:', error);
@@ -53,9 +56,9 @@ export const AuthProvider = ({ children }) => {
 
       const { token: userToken, user: userData } = response.data;
 
-      // Store auth data (in React Native, use AsyncStorage)
-      localStorage.setItem('authToken', userToken);
-      localStorage.setItem('userData', JSON.stringify(userData));
+      // Store auth data
+      await AsyncStorage.setItem('userToken', userToken);
+      await AsyncStorage.setItem('userData', JSON.stringify(userData));
       
       // Set API default header
       api.defaults.headers.common['Authorization'] = `Bearer ${userToken}`;
@@ -71,8 +74,7 @@ export const AuthProvider = ({ children }) => {
 
   const logout = async () => {
     try {
-      localStorage.removeItem('authToken');
-      localStorage.removeItem('userData');
+      await AsyncStorage.multiRemove(['userToken', 'userData']);
       setToken(null);
       setUser(null);
       delete api.defaults.headers.common['Authorization'];
@@ -81,7 +83,27 @@ export const AuthProvider = ({ children }) => {
     }
   };
 
+  const updateProfile = async (profileData) => {
+    try {
+      const response = await api.put('/auth/profile', profileData);
+      const updatedUser = response.data.user;
+      
+      await AsyncStorage.setItem('userData', JSON.stringify(updatedUser));
+      setUser(updatedUser);
+
+      if (profileData.language) {
+        setLanguage(profileData.language);
+        await AsyncStorage.setItem('userLanguage', profileData.language);
+      }
+
+      return response.data;
+    } catch (error) {
+      throw new Error(error.response?.data?.error || 'Profile update failed');
+    }
+  };
+
   const formatPhoneNumber = (phone) => {
+    // Ensure Nigerian phone number format
     let formatted = phone.replace(/\s/g, '');
     if (formatted.startsWith('0')) {
       formatted = '+234' + formatted.substring(1);
@@ -101,6 +123,7 @@ export const AuthProvider = ({ children }) => {
         requestOTP,
         login,
         logout,
+        updateProfile,
         setLanguage
       }}
     >
