@@ -24,9 +24,24 @@ module.exports = {
     migrations: {
       directory: path.join(__dirname, 'migrations')
     },
+    seeds: {
+      directory: path.join(__dirname, 'seeds')
+    },
     pool: {
       min: 2,
       max: 10
+    }
+  },
+  
+  // For offline sync
+  sync: {
+    client: 'sqlite3',
+    connection: {
+      filename: './local_sync.db'
+    },
+    useNullAsDefault: true,
+    migrations: {
+      directory: path.join(__dirname, 'migrations/sync')
     }
   }
 };
